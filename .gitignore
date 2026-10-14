@@ -1,6 +1,0 @@
-*.epf
-.tempdb/*
-build/*
-*.txt
-*.todo
-agentbasedir.json
