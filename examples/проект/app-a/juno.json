@@ -1,0 +1,1 @@
+{"schemaVersion":1,"entry":"src/Программа.bsl","sources":["src"],"tests":["tests"],"dependencies":[{"path":"../shared","namespace":"Shared"}],"requires":{"jdk":21}}

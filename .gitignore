@@ -1,0 +1,5 @@
+build/
+*.jar
+!bootstrap/seed.jar
+__pycache__/
+*.pyc

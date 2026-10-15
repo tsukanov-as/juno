@@ -1,0 +1,4 @@
+interface:
+  display_name: "Сравнение BSL: 1С, OneScript и juno"
+  short_description: "Проверка поведения BSL на 1С, OneScript и juno"
+  default_prompt: "Используй $bsl-differential-testing для проверки реализации juno на общих кейсах с платформой 1С и OneScript."
