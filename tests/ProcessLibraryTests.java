@@ -30,6 +30,9 @@ public final class ProcessLibraryTests {
     static String digest(Path file) throws Exception {MessageDigest d=MessageDigest.getInstance("SHA-256");try(InputStream in=Files.newInputStream(file)){byte[] b=new byte[65536];int n;while((n=in.read(b))>=0)d.update(b,0,n);}return HexFormat.of().formatHex(d.digest());}
     static String expected(int seed,int blocks) throws Exception {MessageDigest d=MessageDigest.getInstance("SHA-256");byte[] b=block(seed);for(int i=0;i<blocks;i++)d.update(b);return HexFormat.of().formatHex(d.digest());}
     static void fixture(String mode,String[] args) throws Exception {
+        // Write deterministic UTF-8 even when the Windows launcher selects the console code page.
+        System.setOut(new PrintStream(System.out,true,StandardCharsets.UTF_8));
+        System.setErr(new PrintStream(System.err,true,StandardCharsets.UTF_8));
         switch(mode){
             case "args"->System.out.print(Json.stringify(List.of(args)));
             case "env"->{System.out.println(Path.of("").toAbsolutePath());System.out.println(System.getenv("JUNO_PROCESS_VALUE"));System.out.println(System.getenv("JUNO_PROCESS_EMPTY"));}
@@ -57,6 +60,49 @@ public final class ProcessLibraryTests {
             Object nonzero=process("exit");c(nonzero,"Start");c(nonzero,"WaitForExit");check(p(nonzero,"ExitCode").equals(n(7)),"nonzero is exit");c(nonzero,"Close");
             Object inherited=create(command("streams"));c(inherited,"Start");c(inherited,"WaitForExit");check(out.toString(StandardCharsets.UTF_8).equals("A\n\nПривет\r\nlast")&&err.toString(StandardCharsets.UTF_8).equals("Ошибка\n"),"context outputs forwarded exactly");c(inherited,"Close");
             fails(()->g("CreateProcess",array(command("exit"))));fails(()->g("CreateProcessWithArguments",array(List.of("a\0b"))));fails(()->g("CreateProcessWithArguments",array(List.of(""))));Object missing=create(List.of(root.resolve("absent").toString()));fails(()->c(missing,"Start"));check(owner.openResourceCount()==0,"basic errors/resources");
+        }
+    }
+    static void quotedArguments(Path root) throws Exception {
+        List<String> expected=List.of("", "two words", "Я", "quote\"x", "\"quoted\"", "\"", "a\\\"b",
+            "space and quote\"", "end\"\\", "two\\\\\"quotes\"", "trailing\\", "space trailing\\", "\t", "&|<>^%!");
+        try(var owner=context(root,Map.of(),OutputStream.nullOutputStream(),OutputStream.nullOutputStream());var scope=Execution.withContext(owner)){
+            Object child=process("args",expected.toArray(String[]::new));
+            c(child,"Start");c(p(child,"StdIn"),"Close");check(c(child,"WaitForExit",n(5000)).equals(true),"quoted argv wait");
+            String actual=(String)c(p(child,"StdOut"),"Read");
+            check(Json.parse(actual).equals(expected),"quoted argv: "+actual);c(child,"Close");
+        }
+        Path source=Files.createDirectories(root.resolve("quoted argv")).resolve("Программа.bsl");
+        StringBuilder bsl=new StringBuilder("А=Новый Массив;\n");
+        for(String arg:command("args",expected.toArray(String[]::new)))bsl.append("А.Добавить(\"").append(arg.replace("\"","\"\"")).append("\");\n");
+        bsl.append("П=СоздатьПроцессСАргументами(А,\"\",Истина); П.Запустить(); П.ОжидатьЗавершения(); Сообщить(П.ПотокВывода.Прочитать()); П.Закрыть();\n");
+        Files.writeString(source,bsl);
+        Path jar=root.resolve("quoted-argv.jar");
+        for(boolean built:List.of(false,true)){
+            ByteArrayOutputStream out=new ByteArrayOutputStream(),err=new ByteArrayOutputStream();
+            if(built)check(Main.execute(new String[]{"build",source.toString(),"--output",jar.toString()},new PrintStream(out),new PrintStream(err))==0,err.toString());
+            List<String> cmd=built?List.of(JAVA,"-jar",jar.toString()):List.of(JAVA,"-jar",Path.of("build/juno.jar").toAbsolutePath().toString(),"run",source.toString());
+            Path output=root.resolve("quoted.out"),errors=root.resolve("quoted.err");
+            Process child=new ProcessBuilder(cmd).directory(root.toFile()).redirectOutput(output.toFile()).redirectError(errors.toFile()).start();
+            if(!child.waitFor(15,TimeUnit.SECONDS)){child.destroyForcibly();child.waitFor();throw new AssertionError("quoted argv run/JAR timeout");}
+            check(child.exitValue()==0,Files.readString(errors));
+            String actual=Files.readString(output);check(Json.parse(actual).equals(expected),"quoted argv run/JAR: "+actual);
+        }
+    }
+    static void lockedSpool(Path root) throws Exception {
+        if(!System.getProperty("os.name").startsWith("Windows"))return;
+        Path temp=Path.of(System.getProperty("java.io.tmpdir"));Set<Path> before;
+        try(var files=Files.list(temp)){before=new HashSet<>(files.toList());}
+        try(var owner=context(root,Map.of(),OutputStream.nullOutputStream(),OutputStream.nullOutputStream());var scope=Execution.withContext(owner)){
+            Path ready=root.resolve("locked-spool.ready");Object child=process("live",ready.toString());c(child,"Start");marker(ready);
+            Path spool;try(var files=Files.list(temp)){spool=files.filter(p->!before.contains(p)&&p.toString().endsWith(".stdout")).findFirst().orElseThrow();}
+            try(var pin=java.nio.channels.FileChannel.open(spool,StandardOpenOption.READ,com.sun.nio.file.ExtendedOpenOption.NOSHARE_DELETE)){
+                c(p(child,"StdIn"),"Close");c(child,"WaitForExit");Thread.sleep(100);
+                check(owner.openResourceCount()==1&&Files.exists(spool),"locked spool keeps its owner until deletion succeeds");
+                check(c(p(child,"StdOut"),"Read").equals("Я\n"),"frozen output remains readable while deletion is blocked");
+            }
+            long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+            while(owner.openResourceCount()>0&&System.nanoTime()<deadline)Thread.sleep(10);
+            check(owner.openResourceCount()==0&&!Files.exists(spool),"spool cleanup retries after Windows lock is released");c(child,"Close");
         }
     }
     static void live(Path root) throws Exception {
@@ -134,7 +180,7 @@ public final class ProcessLibraryTests {
     static long spools(Path dir) throws IOException {try(var files=Files.list(dir)){return files.filter(f->f.getFileName().toString().startsWith("juno-process-")).count();}}
     /** Processes cannot be closed in 1C, so a finished one must give back its files and descriptors by itself. */
     static void unclosed(Path root) throws Exception {
-        List<String> echo=System.getProperty("os.name").startsWith("Windows")?List.of("cmd.exe","/c","echo","hello"):List.of("/bin/echo","hello");
+        List<String> echo=System.getProperty("os.name").startsWith("Windows")?List.of(System.getenv("COMSPEC"),"/c","echo","hello"):List.of("/bin/echo","hello");
         Path temp=Path.of(System.getProperty("java.io.tmpdir"));long before=spools(temp);
         try(var owner=context(root,Map.of(),new ByteArrayOutputStream(),new ByteArrayOutputStream());var scope=Execution.withContext(owner)){
             for(int i=0;i<60;i++){
@@ -157,7 +203,7 @@ public final class ProcessLibraryTests {
             Path isolated=Files.createTempDirectory("juno-process-isolated-");try{Process child=new ProcessBuilder(JAVA,"-Djuno.process.isolated=true","-Djava.io.tmpdir="+isolated,"-cp",CP,"ProcessLibraryTests").inheritIO().start();if(!child.waitFor(60,TimeUnit.SECONDS)){child.destroyForcibly();throw new AssertionError("process suite timeout");}check(child.exitValue()==0,"isolated process suite");}
             finally{try(var files=Files.walk(isolated)){for(Path path:files.sorted(Comparator.reverseOrder()).toList())Files.deleteIfExists(path);}}return;
         }
-        Path root=Files.createTempDirectory("juno-process-tests-");try{parser();basics(root);unclosed(root);live(root);environment(root);timeoutStop(root);slowHost(root);blockedInput(root);cancellation(root);large(root);byref(root);}finally{try(var paths=Files.walk(root)){for(Path p:paths.sorted(Comparator.reverseOrder()).toList())Files.deleteIfExists(p);}}
+        Path root=Files.createTempDirectory("juno-process-tests-");try{parser();basics(root);quotedArguments(root);lockedSpool(root);unclosed(root);live(root);environment(root);timeoutStop(root);slowHost(root);blockedInput(root);cancellation(root);large(root);byref(root);}finally{try(var paths=Files.walk(root)){for(Path p:paths.sorted(Comparator.reverseOrder()).toList())Files.deleteIfExists(p);}}
         try(var files=Files.list(Path.of(System.getProperty("java.io.tmpdir")))){check(files.noneMatch(path->path.getFileName().toString().startsWith("juno-process-")&&(path.toString().endsWith(".stdout")||path.toString().endsWith(".stderr"))),"all private process spools deleted");}
         check(Thread.getAllStackTraces().keySet().stream().noneMatch(t->t.getName().startsWith("juno-process-")),"no process watcher leaks");System.out.println("Process library PASS");
     }

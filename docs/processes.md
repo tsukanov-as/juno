@@ -52,6 +52,9 @@ Windows: space/TAB и double quotes; отдельные правила argv0, ч
 перед quote, doubled quote внутри quoted arg — [CRT rules Microsoft](https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments?view=msvc-170).
 Незакрытые quotes явно отвергаются. Single quote — обычный символ.
 Нестандартный native parser конкретного executable может отличаться от CRT.
+При передаче argv в стандартном режиме JDK на Windows juno экранирует встроенные
+кавычки и обратные слеши перед ними по CRT: аргумент `a"b` остаётся одним аргументом
+с буквальной кавычкой. Явный `cmd.exe /c` использует собственные правила оболочки.
 
 Executable с разделителем пути разрешается через **child cwd**, абсолютный путь сохраняется.
 Basename ищется самим juno через snapshot PATH: JDK иначе использует PATH родительской JVM при поиске.
