@@ -4,8 +4,12 @@
 Требуется JDK 21+. Архив содержит `lib/juno.jar`, bin, документацию, примеры и плагины.
 Исходник `src/Parser.bsl` включён как справочник узлов и подписок для авторов плагинов.
 Распакуйте архив в постоянное место. Linux/macOS: `sh /путь/juno/bin/juno --help`
-(или `chmod +x bin/juno` и добавьте bin в PATH). Windows: `bin\juno.cmd --help` либо
-`bin\juno.ps1 --help`. JAVA_HOME выбирает JDK, иначе используется PATH. Launchers проверяют
+(или `chmod +x bin/juno` и добавьте bin в PATH). Windows PowerShell из папки `juno`:
+`.\bin\juno.cmd --help` либо `.\bin\juno.ps1 --help`; полный путь с пробелами
+вызывается через `& 'C:\путь\juno\bin\juno.cmd' --help`.
+Если политика выполнения запрещает `.ps1`, используйте `.cmd`.
+После установки JDK откройте новый терминал (для встроенного терминала перезапустите IDE).
+JAVA_HOME выбирает JDK, иначе используется PATH. Launchers проверяют
 Java 21+, сохраняют cwd и код выхода. Для приложения достаточно `java -jar app.jar`.
 
 ```sh
@@ -16,6 +20,9 @@ juno build demo --output app.jar
 cd /tmp
 java -jar /полный/путь/app.jar
 ```
+
+В PowerShell вместо `cd /tmp` используйте `Set-Location $env:TEMP`,
+а путь к JAR укажите как `java -jar 'C:\полный\путь\app.jar'`.
 
 `init` создаёт manifest, src/Программа.bsl, src/Приветствие.bsl, tests/Smoke.bsl и assets/info.txt.
 При наличии любого создаваемого файла команда завершается до записи. Свои исходники не затираются.

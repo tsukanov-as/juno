@@ -22,6 +22,7 @@ juno lint src --dialect 1c --plugin проверки  # проверить ко�
    - Linux: `sudo apt install openjdk-21-jdk`
 
    Проверь: `java -version`.
+   Для сборки нужен именно JDK: команда `javac -version` тоже должна работать.
 
 2. В корне репозитория выполни:
 
@@ -35,8 +36,13 @@ juno lint src --dialect 1c --plugin проверки  # проверить ко�
 3. Распакуй `build/juno.zip` и запускай из папки `juno`:
    - macOS/Linux: `sh /путь/juno/bin/juno --help`; для команды из PATH выполни
      `chmod +x /путь/juno/bin/juno` и добавь эту bin-папку в PATH.
-   - Windows: `C:\путь\juno\bin\juno.cmd --help`; добавь bin-папку в PATH.
-     Из PowerShell можно использовать `juno.ps1`, который сохраняет пустые аргументы и кавычки также в Windows PowerShell 5.1.
+   - Windows PowerShell: `& 'C:\путь\juno\bin\juno.cmd' --help`;
+     из распакованной папки `juno` — `.\bin\juno.cmd --help`.
+     Добавь bin-папку в PATH, чтобы вызывать `juno` из других каталогов.
+     Можно использовать `.\bin\juno.ps1`, который сохраняет пустые аргументы и кавычки
+     также в Windows PowerShell 5.1. Если политика выполнения запрещает скрипты,
+     используй `.cmd` или запусти `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bin\juno.ps1 --help`.
+   - Windows cmd.exe: `"C:\путь\juno\bin\juno.cmd" --help`.
 
 ## Локальный проект и дистрибутив
 

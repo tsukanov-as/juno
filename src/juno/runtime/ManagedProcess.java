@@ -71,7 +71,7 @@ final class ManagedProcess implements NativeObject,TypedValue,ApplicationContext
             ProcessArguments.nativeEncoding(argv,cwd,env);
             out=Files.createTempFile("juno-process-",".stdout");err=Files.createTempFile("juno-process-",".stderr");
             synchronized(lock){if(closed)throw error("Процесс закрыт");stdoutPath=out;stderrPath=err;}
-            ProcessBuilder builder=new ProcessBuilder(argv).directory(cwd.toFile());builder.environment().clear();builder.environment().putAll(env);
+            ProcessBuilder builder=new ProcessBuilder(ProcessArguments.launchArguments(argv)).directory(cwd.toFile());builder.environment().clear();builder.environment().putAll(env);
             builder.redirectOutput(out.toFile());builder.redirectError(err.toFile());
             launched=builder.start();output=new ProcessText.Output(this,out);errors=new ProcessText.Output(this,err);input=new ProcessText.Input(this,launched.getOutputStream());
             synchronized(lock){if(!closed){process=launched;stdout=output;stderr=errors;stdin=input;started=true;}}
@@ -91,7 +91,7 @@ final class ManagedProcess implements NativeObject,TypedValue,ApplicationContext
     private void capture(){Process p=process;if(p!=null&&p.isAlive())try{p.descendants().forEach(descendants::add);}catch(RuntimeException restricted){/* OS permissions may deny tree enumeration; the owned root is still killed. */}}
     private void observe(){
         try{while(!closed){capture();if(!redirectOutput){stdout.forward(owner.output());stderr.forward(owner.error());}
-            if(!active()&&(redirectOutput||stdout.caughtUp()&&stderr.caughtUp())){settle();return;}Thread.sleep(10);
+            if(!active()&&(redirectOutput||stdout.caughtUp()&&stderr.caughtUp())&&settle())return;Thread.sleep(10);
         }}catch(InterruptedException e){Thread.currentThread().interrupt();}catch(IOException e){asynchronousFailure=e;Process p=process;if(p!=null)p.destroyForcibly();}
     }
     /**
@@ -99,15 +99,16 @@ final class ManagedProcess implements NativeObject,TypedValue,ApplicationContext
      * kept for reading moves into memory (up to 16 MiB each), the spool files, the pipe to stdin and the registration
      * with the application go. A larger output keeps its spool until Close or the end of the program.
      */
-    private void settle(){
+    private boolean settle(){
         try{
-            if(closed)return;
-            if(redirectOutput){if(!(stdout.freeze(HttpData.Response.LIMIT)&stderr.freeze(HttpData.Response.LIMIT)))return;}
+            if(closed)return true;
+            if(redirectOutput){if(!(stdout.freeze(HttpData.Response.LIMIT)&stderr.freeze(HttpData.Response.LIMIT)))return true;}
             else{stdout.close();stderr.close();}
             try{if(stdin!=null)stdin.close();}catch(IOException closing){/* the pipe of an ended child */}
             for(Path path:new Path[]{stdoutPath,stderrPath})if(path!=null)Files.deleteIfExists(path);
             owner.release(this);
-        }catch(IOException|RuntimeException e){/* Close and the end of the program still clean up */}
+            return true;
+        }catch(IOException|RuntimeException e){return false; /* A Windows file lock may outlive child exit; retry until Close. */}
     }
     boolean active(){Process p=process;return p!=null&&(p.isAlive()||descendants.stream().anyMatch(ProcessHandle::isAlive));}
     boolean waitFor(long timeout){
@@ -128,7 +129,20 @@ final class ManagedProcess implements NativeObject,TypedValue,ApplicationContext
         boolean interrupted=Thread.interrupted();try{
             long gentle=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(200);while(targets.stream().anyMatch(ProcessHandle::isAlive)&&System.nanoTime()<gentle)try{Thread.sleep(10);}catch(InterruptedException e){interrupted=true;}
             for(ProcessHandle handle:targets)if(handle.isAlive())handle.destroyForcibly();
+            long forced=System.nanoTime()+TimeUnit.SECONDS.toNanos(2);
+            while(targets.stream().anyMatch(ProcessHandle::isAlive)&&System.nanoTime()<forced)try{Thread.sleep(10);}catch(InterruptedException e){interrupted=true;}
+            if(targets.stream().anyMatch(ProcessHandle::isAlive))throw error("Дерево процессов не завершилось после kill");
             try{if(!p.waitFor(2,TimeUnit.SECONDS))throw error("Процесс не завершился после kill");}catch(InterruptedException e){interrupted=true;p.destroyForcibly();}
+        }finally{if(interrupted)Thread.currentThread().interrupt();}
+    }
+    private static void deleteSpool(Path path) throws IOException {
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(1);boolean interrupted=Thread.interrupted();
+        try {
+            while(true)try{Files.deleteIfExists(path);return;}catch(FileSystemException e){
+                if(!System.getProperty("os.name").startsWith("Windows")||System.nanoTime()>=deadline)throw e;
+                // Windows can retain the child's redirect handle briefly after reporting its exit.
+                try{Thread.sleep(10);}catch(InterruptedException wait){interrupted=true;}
+            }
         }finally{if(interrupted)Thread.currentThread().interrupt();}
     }
     public void close(){
@@ -139,7 +153,7 @@ final class ManagedProcess implements NativeObject,TypedValue,ApplicationContext
         Thread thread=watcher;if(thread!=null)thread.interrupt();
         for(AutoCloseable stream:new AutoCloseable[]{stdin,stdout,stderr})if(stream!=null)try{stream.close();}catch(Exception e){if(failure==null)failure=e;else failure.addSuppressed(e);}
         if(thread!=null&&thread!=Thread.currentThread()){boolean interrupted=Thread.interrupted();try{thread.join(1000);if(thread.isAlive())throw error("Process forwarding не завершился (host output может блокировать)");}catch(InterruptedException e){interrupted=true;}catch(RuntimeException e){if(failure==null)failure=e;else failure.addSuppressed(e);}finally{if(interrupted)Thread.currentThread().interrupt();}}
-        for(Path path:new Path[]{stdoutPath,stderrPath})if(path!=null)try{Files.deleteIfExists(path);}catch(IOException e){if(failure==null)failure=e;else failure.addSuppressed(e);}
+        for(Path path:new Path[]{stdoutPath,stderrPath})if(path!=null)try{deleteSpool(path);}catch(IOException e){if(failure==null)failure=e;else failure.addSuppressed(e);}
         owner.release(this);if(failure instanceof RuntimeException e)throw e;if(failure instanceof Error e)throw e;if(failure!=null)throw failure("Закрытие процесса",(Exception)failure);
     }
     public void cancel(){close();}

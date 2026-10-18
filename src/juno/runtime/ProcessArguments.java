@@ -50,6 +50,26 @@ public final class ProcessArguments {
         if(args.isEmpty()||args.getFirst().isEmpty())throw error("Пустой executable");
         for(String arg:args){if(arg.indexOf('\0')>=0)throw error("NUL в аргументе процесса");if(!StandardCharsets.UTF_8.newEncoder().canEncode(arg))throw error("Непарный Unicode surrogate в argv");}return List.copyOf(args);
     }
+    /** JDK's Windows legacy mode quotes whitespace, but leaves embedded quotes literal. */
+    static List<String> launchArguments(List<String> args) {
+        if(!System.getProperty("os.name").startsWith("Windows")
+                || "false".equalsIgnoreCase(System.getProperty("jdk.lang.Process.allowAmbiguousCommands")))return args;
+        // cmd.exe has its own command-language parser, not the CRT argv convention.
+        if(Path.of(args.getFirst()).getFileName().toString().equalsIgnoreCase("cmd.exe"))return args;
+        List<String> result=new ArrayList<>(args.size());result.add(args.getFirst());
+        for(String arg:args.subList(1,args.size())) {
+            if(arg.indexOf('"')<0){result.add(arg);continue;}
+            StringBuilder quoted=new StringBuilder("\"");int slashes=0;
+            for(int i=0;i<arg.length();i++) {
+                char c=arg.charAt(i);
+                if(c=='\\'){slashes++;continue;}
+                quoted.append("\\".repeat(c=='"'?2*slashes+1:slashes)).append(c);slashes=0;
+            }
+            quoted.append("\\".repeat(2*slashes)).append('"');
+            result.add(quoted.toString());
+        }
+        return result;
+    }
     static void nativeEncoding(List<String> argv,Path cwd,Map<String,String> environment) {
         if(System.getProperty("os.name").startsWith("Windows"))return;
         String name=System.getProperty("sun.jnu.encoding",System.getProperty("native.encoding",Charset.defaultCharset().name()));
